@@ -184,7 +184,7 @@ pub(super) fn finalize_inner(
         .unwrap_or_default()
         .into_iter()
         .collect::<HashSet<_>>();
-    let events = rows
+    let events: Vec<FinalizedOtelEvent> = rows
         .into_iter()
         .flatten()
         .map(|row| {
@@ -203,6 +203,7 @@ pub(super) fn finalize_inner(
             Ok(FinalizedOtelEvent {
                 event: PreparedEvent {
                     row: Arc::new(prepared),
+                    memory: state.memory.clone(),
                 },
                 trace_id,
                 start_time_iso: row.start_time_iso,
@@ -210,7 +211,13 @@ pub(super) fn finalize_inner(
                 serialized_event_bytes,
             })
         })
-        .collect::<NativeResult<_>>()?;
+        .collect::<NativeResult<Vec<_>>>()?;
+    state.memory.resize(
+        events
+            .iter()
+            .map(|event| event.event.row.retained_bytes())
+            .sum(),
+    );
     Ok(FinalizedOtelBatch {
         events,
         evaluation_rows,
