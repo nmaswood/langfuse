@@ -9,11 +9,11 @@ import {
   PopoverAnchor,
   PopoverContent,
 } from "@/src/components/ui/popover";
-import { ModelPatternSuggestionItem } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/CreateGatewayApiKeyDialogController/components/CreateGatewayApiKeyDialog/components/GatewayApiKeyModelsField/components/ModelPatternSuggestionItem/ModelPatternSuggestionItem";
-import { ModelPatternTag } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/CreateGatewayApiKeyDialogController/components/CreateGatewayApiKeyDialog/components/GatewayApiKeyModelsField/components/ModelPatternTag/ModelPatternTag";
-import { getGatewayModelPatternSuggestions } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/CreateGatewayApiKeyDialogController/components/CreateGatewayApiKeyDialog/components/GatewayApiKeyModelsField/fns/getGatewayModelPatternSuggestions";
-import type { GatewayModelPatternSuggestion } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/CreateGatewayApiKeyDialogController/components/CreateGatewayApiKeyDialog/components/GatewayApiKeyModelsField/types/gatewayModelPatternSuggestion";
-import { addGatewayModelPatterns } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/CreateGatewayApiKeyDialogController/components/CreateGatewayApiKeyDialog/fns/addGatewayModelPatterns";
+import { ModelPatternSuggestionItem } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/GatewayApiKeyModelsField/components/ModelPatternSuggestionItem/ModelPatternSuggestionItem";
+import { ModelPatternTag } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/GatewayApiKeyModelsField/components/ModelPatternTag/ModelPatternTag";
+import { getGatewayModelPatternSuggestions } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/GatewayApiKeyModelsField/fns/getGatewayModelPatternSuggestions";
+import type { GatewayModelPatternSuggestion } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/GatewayApiKeyModelsField/types/gatewayModelPatternSuggestion";
+import { addGatewayModelPatterns } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/GatewayApiKeyModelsField/fns/addGatewayModelPatterns";
 import type { GatewayEnabledModel } from "@/src/features/ai-gateway/types/gatewayEnabledModel";
 
 const NO_ENABLED_MODELS: GatewayEnabledModel[] = [];

@@ -1,4 +1,4 @@
-import { toTypedGatewayModelPattern } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/CreateGatewayApiKeyDialogController/components/CreateGatewayApiKeyDialog/fns/toTypedGatewayModelPattern";
+import { toTypedGatewayModelPattern } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/GatewayApiKeyModelsField/fns/toTypedGatewayModelPattern";
 
 /** Adds the comma-separated patterns typed in the models input, skipping blanks and duplicates. */
 export const addGatewayModelPatterns = (

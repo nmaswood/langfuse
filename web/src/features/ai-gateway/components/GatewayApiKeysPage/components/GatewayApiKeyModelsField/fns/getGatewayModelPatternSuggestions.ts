@@ -1,5 +1,5 @@
-import type { GatewayModelPatternSuggestion } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/CreateGatewayApiKeyDialogController/components/CreateGatewayApiKeyDialog/components/GatewayApiKeyModelsField/types/gatewayModelPatternSuggestion";
-import { toTypedGatewayModelPattern } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/CreateGatewayApiKeyDialogController/components/CreateGatewayApiKeyDialog/fns/toTypedGatewayModelPattern";
+import type { GatewayModelPatternSuggestion } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/GatewayApiKeyModelsField/types/gatewayModelPatternSuggestion";
+import { toTypedGatewayModelPattern } from "@/src/features/ai-gateway/components/GatewayApiKeysPage/components/GatewayApiKeyModelsField/fns/toTypedGatewayModelPattern";
 import type { GatewayEnabledModel } from "@/src/features/ai-gateway/types/gatewayEnabledModel";
 
 const EXCLUDE_PREFIX = "-";
