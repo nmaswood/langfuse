@@ -82,6 +82,92 @@ describe("Ingestion end-to-end tests", () => {
     await ClickhouseWriter.shutdownAll();
   });
 
+  it("should batch existing observation reads while retaining fields and point-read tails", async () => {
+    if (!redis) throw new Error("Redis not initialized");
+    const traceId = randomUUID();
+    const observationIds = Array.from({ length: 9 }, () => randomUUID());
+    const startedAt = Date.now() - 120_000;
+    const seeds = observationIds.map((id, index) => {
+      const timestamp = new Date(startedAt + index * 1_000).toISOString();
+      const events: ObservationEvent[] = [
+        {
+          id: randomUUID(),
+          type: "span-create",
+          timestamp,
+          body: {
+            id,
+            traceId,
+            startTime: timestamp,
+            name: `prior-${index}`,
+            input: `input-${index}`,
+            output: `output-${index}`,
+            metadata: { retained: index },
+          },
+        },
+      ];
+      return {
+        eventType: "observation" as const,
+        projectId,
+        entityId: id,
+        createdAtTimestamp: new Date(timestamp),
+        events,
+        forwardToEventsTable: false,
+        attribution: testIngestionAttribution,
+      };
+    });
+    await Promise.all(
+      seeds.map((params) => ingestionService.mergeAndWrite(params)),
+    );
+    await clickhouseWriter.flushAll(true);
+
+    const client = clickhouseClient();
+    const service = new IngestionService(
+      redis,
+      prisma,
+      clickhouseWriter,
+      client,
+    );
+    const query = vi.spyOn(client, "query");
+    const updates = seeds.map((seed, index) => {
+      const timestamp = new Date(startedAt + 60_000).toISOString();
+      const events: ObservationEvent[] = [
+        {
+          id: randomUUID(),
+          type: "span-update",
+          timestamp,
+          body: {
+            id: seed.entityId,
+            startTime:
+              index === 4
+                ? undefined
+                : new Date(startedAt + index * 1_000).toISOString(),
+            metadata: { appended: index },
+          },
+        },
+      ];
+      return { ...seed, events };
+    });
+    await service.mergeAndWriteObservationsBatch(updates);
+    const readCount = query.mock.calls.filter(([options]) =>
+      options.query.includes("FROM observations"),
+    ).length;
+    await clickhouseWriter.flushAll(true);
+
+    for (const [index, id] of observationIds.entries()) {
+      const row = await getClickhouseRecord(TableName.Observations, id);
+      expect(row.project_id).toBe(projectId);
+      expect(row.trace_id).toBe(traceId);
+      expect(row.name).toBe(`prior-${index}`);
+      expect(row.input).toBe(`input-${index}`);
+      expect(row.output).toBe(`output-${index}`);
+      expect(row.metadata).toEqual({
+        retained: String(index),
+        appended: String(index),
+      });
+    }
+    expect(readCount).toBe(2);
+  });
+
   it("should correctly ingest a trace", async () => {
     const traceId = randomUUID();
     const traceName = "test-trace";

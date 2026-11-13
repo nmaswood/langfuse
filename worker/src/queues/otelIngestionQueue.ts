@@ -816,14 +816,9 @@ export const otelIngestionQueueProcessorBuilder = (
           }
         }
 
-        // Running everything concurrently might be detrimental to the event loop, but has probably
-        // the highest possible throughput. Therefore, we start with a Promise.all.
-        // If necessary, we may use a for each instead.
-
-        // Process observations via mergeAndWrite
-        const observationWritePromise = Promise.all(
-          observations.map((observation) =>
-            ingestionService.mergeAndWrite({
+        const observationWritePromise =
+          ingestionService.mergeAndWriteObservationsBatch(
+            observations.map((observation) => ({
               eventType: getClickhouseEntityType(observation.type),
               projectId: auth.scope.projectId,
               entityId: observation.body.id || "", // id is always defined for observations
@@ -831,9 +826,8 @@ export const otelIngestionQueueProcessorBuilder = (
               events: [observation],
               forwardToEventsTable: shouldForwardToEventsTable,
               attribution,
-            }),
-          ),
-        );
+            })),
+          );
 
         // Process traces and observations concurrently
         await Promise.all([

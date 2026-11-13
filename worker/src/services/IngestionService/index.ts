@@ -114,6 +114,8 @@ type MergeAndWriteParams = {
   attribution: IngestionAttribution;
 };
 
+const OBSERVATION_READ_BATCH_SIZE = 8;
+
 type PricingTierMatchAttributeValues = {
   modelParameters?: unknown;
   metadata?: unknown;
@@ -184,7 +186,74 @@ export class IngestionService {
     this.skillCacheService = new SkillCacheService(prisma, redis);
   }
 
-  public async mergeAndWrite(params: MergeAndWriteParams): Promise<void> {
+  public async mergeAndWriteObservationsBatch(
+    params: MergeAndWriteParams[],
+  ): Promise<void> {
+    const writes: Promise<void>[] = [];
+    for (
+      let offset = 0;
+      offset < params.length;
+      offset += OBSERVATION_READ_BATCH_SIZE
+    ) {
+      const group = params.slice(offset, offset + OBSERVATION_READ_BATCH_SIZE);
+      let requests:
+        | ReturnType<IngestionService["getObservationLookupParams"]>[]
+        | undefined;
+      if (
+        group.length === OBSERVATION_READ_BATCH_SIZE &&
+        group.every(
+          (item) =>
+            item.eventType === "observation" &&
+            item.projectId === group[0].projectId &&
+            item.events.length > 0,
+        )
+      ) {
+        try {
+          requests = group.map((item) =>
+            this.getObservationLookupParams(
+              item.projectId,
+              item.entityId,
+              item.events as ObservationEvent[],
+            ),
+          );
+        } catch {
+          requests = undefined;
+        }
+      }
+      if (!requests) {
+        writes.push(...group.map((item) => this.mergeAndWrite(item)));
+        continue;
+      }
+      const lookups = requests;
+      const rows = this.getClickhouseObservationsBatch(lookups);
+      writes.push(
+        ...group.map((item, ordinal) =>
+          this.mergeAndWrite(
+            item,
+            rows.then((records) => {
+              if (records === undefined) {
+                return this.getClickhouseRecord(lookups[ordinal]);
+              }
+              const record = records.find(
+                (row) => row.__request_ordinal === ordinal,
+              );
+              return record
+                ? convertObservationReadToInsert(
+                    observationRecordReadSchema.parse(record),
+                  )
+                : null;
+            }),
+          ),
+        ),
+      );
+    }
+    await Promise.all(writes);
+  }
+
+  public async mergeAndWrite(
+    params: MergeAndWriteParams,
+    observationLookup?: Promise<ObservationRecordInsertType | null>,
+  ): Promise<void> {
     const {
       eventType,
       projectId,
@@ -217,6 +286,7 @@ export class IngestionService {
           observationEventList: events as ObservationEvent[],
           writeToStagingTables: forwardToEventsTable,
           attribution,
+          observationLookup,
         });
       case "score": {
         return await this.processScoreEventList({
@@ -925,6 +995,7 @@ export class IngestionService {
     observationEventList: ObservationEvent[];
     writeToStagingTables: boolean;
     attribution: IngestionAttribution;
+    observationLookup?: Promise<ObservationRecordInsertType | null>;
   }) {
     const {
       projectId,
@@ -933,36 +1004,22 @@ export class IngestionService {
       observationEventList,
       writeToStagingTables,
       attribution,
+      observationLookup,
     } = params;
     if (observationEventList.length === 0) return;
 
     const timeSortedEvents =
       IngestionService.toTimeSortedEventList(observationEventList);
 
-    const type = this.getObservationType(observationEventList[0]);
-    const minStartTime = Math.min(
-      ...observationEventList.flatMap((e) =>
-        e.body?.startTime ? [new Date(e.body.startTime).getTime()] : [],
-      ),
-    );
-    const startTime =
-      minStartTime === Infinity
-        ? undefined
-        : convertDateToClickhouseDateTime(new Date(minStartTime));
-
     const [clickhouseObservationRecord, prompt] = await Promise.all([
-      this.getClickhouseRecord({
-        projectId,
-        entityId,
-        table: TableName.Observations,
-        additionalFilters: {
-          whereCondition: `AND type = {type: String} ${startTime ? "AND start_time >= {startTime: DateTime64(3)} " : ""}`,
-          params: {
-            type,
-            startTime,
-          },
-        },
-      }),
+      observationLookup ??
+        this.getClickhouseRecord(
+          this.getObservationLookupParams(
+            projectId,
+            entityId,
+            observationEventList,
+          ),
+        ),
       this.getPrompt(projectId, observationEventList),
     ]);
 
@@ -1535,6 +1592,167 @@ export class IngestionService {
         writePath,
       },
     );
+  }
+
+  private getObservationLookupParams(
+    projectId: string,
+    entityId: string,
+    observationEventList: ObservationEvent[],
+  ) {
+    const type = this.getObservationType(observationEventList[0]);
+    const minStartTime = Math.min(
+      ...observationEventList.flatMap((event) =>
+        event.body?.startTime ? [new Date(event.body.startTime).getTime()] : [],
+      ),
+    );
+    const startTime =
+      minStartTime === Infinity
+        ? undefined
+        : convertDateToClickhouseDateTime(new Date(minStartTime));
+    return {
+      projectId,
+      entityId,
+      table: TableName.Observations as const,
+      additionalFilters: {
+        whereCondition: `AND type = {type: String} ${startTime ? "AND start_time >= {startTime: DateTime64(3)} " : ""}`,
+        params: { type, startTime },
+      },
+    };
+  }
+
+  private async getClickhouseObservationsBatch(
+    requests: ReturnType<IngestionService["getObservationLookupParams"]>[],
+  ): Promise<Array<{ __request_ordinal: number }> | undefined> {
+    const projectId = requests[0].projectId;
+    if (
+      await ClickhouseReadSkipCache.getInstance(
+        this.prisma,
+      ).shouldSkipClickHouseRead(projectId)
+    ) {
+      recordIncrement(
+        "langfuse.ingestion.clickhouse_read_for_update",
+        requests.length,
+        {
+          skipped: "true",
+          table: TableName.Observations,
+        },
+      );
+      return [];
+    }
+    const bounds = requests.flatMap((request) =>
+      request.additionalFilters.params.startTime
+        ? [request.additionalFilters.params.startTime]
+        : [],
+    );
+    const commonBound =
+      bounds.length === requests.length ? bounds.sort()[0] : undefined;
+    let records: Array<{ __request_ordinal: number }>;
+    try {
+      records = await instrumentAsync(
+        { name: "get-clickhouse-observations", spanKind: SpanKind.CLIENT },
+        async (span) => {
+          span.setAttribute("ch.query.table", TableName.Observations);
+          span.setAttribute("db.system", "clickhouse");
+          span.setAttribute("db.operation.name", "SELECT");
+          span.setAttribute("projectId", projectId);
+          span.setAttribute("ch.query.batch_size", requests.length);
+          const result = await this.clickhouseClient.query({
+            query: `
+              WITH request_rows AS (
+                SELECT tupleElement(request, 1) AS request_ordinal,
+                       tupleElement(request, 2) AS request_id,
+                       tupleElement(request, 3) AS request_type,
+                       tupleElement(request, 4) AS has_bound,
+                       tupleElement(request, 5) AS lower_bound
+                FROM (
+                  SELECT arrayJoin(arrayZip(
+                    {ordinals: Array(UInt32)}, {ids: Array(String)},
+                    {types: Array(String)}, {hasBounds: Array(UInt8)},
+                    {lowerBounds: Array(DateTime64(3))}
+                  )) AS request
+                )
+              )
+              SELECT r.request_ordinal AS __request_ordinal, o.*
+              FROM (
+                SELECT * FROM observations
+                PREWHERE project_id = {projectId: String}
+                  AND (type, id) IN (SELECT request_type, request_id FROM request_rows)
+                  ${commonBound ? "AND start_time >= {commonBound: DateTime64(3)}" : ""}
+              ) AS o
+              ALL INNER JOIN request_rows AS r
+                ON o.id = r.request_id AND o.type = r.request_type
+              WHERE r.has_bound = 0 OR o.start_time >= r.lower_bound
+              ORDER BY o.event_ts DESC
+              LIMIT 1 BY __request_ordinal
+              SETTINGS use_query_cache = false
+            `,
+            format: "JSONEachRow",
+            query_params: {
+              projectId,
+              ordinals: requests.map((_request, ordinal) => ordinal),
+              ids: requests.map((request) => request.entityId),
+              types: requests.map(
+                (request) => request.additionalFilters.params.type,
+              ),
+              hasBounds: requests.map((request) =>
+                request.additionalFilters.params.startTime ? 1 : 0,
+              ),
+              lowerBounds: requests.map(
+                (request) =>
+                  request.additionalFilters.params.startTime ??
+                  "2000-01-01 00:00:00.000",
+              ),
+              ...(commonBound ? { commonBound } : {}),
+            },
+            clickhouse_settings: {
+              log_comment: buildClickHouseLogComment({ projectId }),
+            },
+          });
+          span.setAttribute("ch.queryId", result.query_id);
+          const summaryHeader = result.response_headers["x-clickhouse-summary"];
+          if (summaryHeader) {
+            try {
+              const summary = Array.isArray(summaryHeader)
+                ? JSON.parse(summaryHeader[0])
+                : JSON.parse(summaryHeader);
+              for (const key in summary)
+                span.setAttribute(`ch.${key}`, summary[key]);
+            } catch (error) {
+              logger.debug(
+                `Failed to parse clickhouse summary header ${summaryHeader}`,
+                error,
+              );
+            }
+          }
+          const rows = await result.json<{ __request_ordinal: number }>();
+          const ordinals = new Set<number>();
+          for (const row of rows) {
+            const ordinal = row.__request_ordinal;
+            if (
+              !Number.isInteger(ordinal) ||
+              ordinal < 0 ||
+              ordinal >= requests.length ||
+              ordinals.has(ordinal)
+            ) {
+              throw new Error("Invalid observation lookup ordinals");
+            }
+            ordinals.add(ordinal);
+          }
+          return rows;
+        },
+      );
+    } catch {
+      return undefined;
+    }
+    recordIncrement(
+      "langfuse.ingestion.clickhouse_read_for_update",
+      requests.length,
+      {
+        skipped: "false",
+        table: TableName.Observations,
+      },
+    );
+    return records;
   }
 
   private async getClickhouseRecord(params: {
